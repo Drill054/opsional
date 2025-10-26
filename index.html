@@ -3,162 +3,255 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Web Kamera Real-time - Deteksi Jari</title>
+  <title>Pendeteksi Cuaca (WIB / Cimahi / Ikuti Lokasi)</title>
   <style>
-    body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; display:flex;flex-direction:column;align-items:center;gap:12px;padding:12px;background:#111;color:#fff }
-    #container{position:relative;width:640px;max-width:95%;}
-    video, canvas{width:100%;height:auto;border-radius:8px;background:#000}
-    #message{font-size:1.25rem;padding:8px 12px;border-radius:8px;background:rgba(0,0,0,0.5);}
-    #status{font-size:0.9rem;opacity:0.8}
-    .hint{font-size:0.85rem;color:#cfcfcf}
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;margin:0}
+    body{background:linear-gradient(180deg,#e9f2ff,#f7fbff);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{width:100%;max-width:780px;background:#fff;border-radius:12px;box-shadow:0 6px 30px rgba(20,40,80,0.08);padding:20px}
+    h1{margin:0 0 8px;font-size:20px}
+    .meta{color:#556; font-size:14px;margin-bottom:12px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+    input[type=text]{flex:1;padding:10px;border:1px solid #ddd;border-radius:8px}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#007bff;color:#fff;cursor:pointer}
+    button.alt{background:#6c757d}
+    .row{display:flex;gap:12px;align-items:center}
+    .weather-main{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-top:12px}
+    .info{min-width:160px}
+    .big-temp{font-size:48px;font-weight:700}
+    .small{color:#556}
+    .hourly{overflow:auto;margin-top:14px;padding-top:10px;border-top:1px solid #f0f4fb}
+    .hourly-item{display:inline-block;width:92px;padding:8px;margin-right:8px;border-radius:8px;background:#f8fbff;text-align:center}
+    footer{margin-top:12px;font-size:13px;color:#667}
+    .loading{color:#007bff}
   </style>
 </head>
 <body>
-  <h2>Web Kamera Real-time — Deteksi Jumlah Jari</h2>
-  <div id="container">
-    <video id="video" playsinline></video>
-    <canvas id="overlay"></canvas>
+  <div class="card">
+    <h1>Pendeteksi Cuaca — WIB / Ikuti Lokasi</h1>
+    <div class="meta">Otomatis deteksi lokasi (atau pakai Cimahi). Data dari Open-Meteo (gratis, tanpa API key).</div>
+
+    <div class="controls">
+      <button id="btn-loc">📍 Ikuti Lokasi Saya</button>
+      <button id="btn-cim" class="alt">🏙️ Gunakan Cimahi (WIB)</button>
+      <div style="flex:1"></div>
+      <div id="last-update" class="small">—</div>
+    </div>
+
+    <div id="status" class="small">Tekan <b>Ikuti Lokasi Saya</b> atau <b>Gunakan Cimahi</b> untuk mulai.</div>
+
+    <div id="weather" style="display:none">
+      <div class="weather-main">
+        <div class="info">
+          <div id="place" class="small"></div>
+          <div id="local-time" class="small"></div>
+          <div class="big-temp" id="temp">--°C</div>
+          <div id="condition" class="small"></div>
+        </div>
+        <div class="info small">
+          <div>Kecepatan angin: <span id="winds">-- m/s</span></div>
+          <div>Tekanan: <span id="pressure">-- hPa</span></div>
+          <div>Curah hujan (1h): <span id="precip">-- mm</span></div>
+        </div>
+      </div>
+
+      <div class="hourly" id="hourly"></div>
+
+      <footer>
+        Data diambil dari <a href="https://open-meteo.com" target="_blank">Open-Meteo</a>. Contoh kondisi saat ini untuk Cimahi: <span id="example-now">—</span>.
+      </footer>
+    </div>
   </div>
-  <div id="message">Arahkan tangan ke kamera. Tunjukkan 1/2/3 jari.</div>
-  <div id="status">Menunggu kamera...</div>
-  <div class="hint">Catatan: Gunakan browser modern (Chrome/Edge/Firefox) dan izinkan akses kamera.</div>
 
-  <script type="module">
-    import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646427220/hands.js';
-    import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.4.1646427220/camera_utils.js';
-    import { drawConnectors, drawLandmarks } from 'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.4.1646427220/drawing_utils.js';
+<script>
+/*
+  Simple Weather Detector
+  - Uses Geolocation API (if diizinkan)
+  - Fallback ke Cimahi coords
+  - Uses Open-Meteo free API
+  - Shows local time in Asia/Jakarta (WIB)
+*/
 
-    const videoElement = document.getElementById('video');
-    const canvasElement = document.getElementById('overlay');
-    const canvasCtx = canvasElement.getContext('2d');
-    const messageEl = document.getElementById('message');
-    const statusEl = document.getElementById('status');
+const CIMAHI = { lat: -6.8975, lon: 107.5450, name: 'Cimahi, Indonesia' }; // fallback coords
+const REFRESH_MS = 10 * 60 * 1000; // refresh tiap 10 menit
 
-    // Resize canvas to match video size
-    function fitCanvas() {
-      canvasElement.width = videoElement.videoWidth;
-      canvasElement.height = videoElement.videoHeight;
+const btnLoc = document.getElementById('btn-loc');
+const btnCim = document.getElementById('btn-cim');
+const statusEl = document.getElementById('status');
+const weatherEl = document.getElementById('weather');
+const placeEl = document.getElementById('place');
+const localTimeEl = document.getElementById('local-time');
+const tempEl = document.getElementById('temp');
+const condEl = document.getElementById('condition');
+const windsEl = document.getElementById('winds');
+const precipEl = document.getElementById('precip');
+const pressureEl = document.getElementById('pressure');
+const hourlyEl = document.getElementById('hourly');
+const lastUpdateEl = document.getElementById('last-update');
+const exampleNow = document.getElementById('example-now');
+
+let currentCoords = null;
+let refreshTimer = null;
+
+btnLoc.addEventListener('click', () => {
+  status('Mencari lokasi… (izinkan Geolocation di browser)');
+  if (!navigator.geolocation) {
+    status('Geolocation tidak didukung di browser ini.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    const { latitude, longitude } = pos.coords;
+    currentCoords = { lat: latitude, lon: longitude, name: 'Lokasi Anda' };
+    fetchAndRender(currentCoords);
+  }, err => {
+    status('Gagal mendapatkan lokasi. Menggunakan Cimahi sebagai fallback.');
+    useCimahi();
+  }, { enableHighAccuracy: true, maximumAge: 60_000, timeout: 15_000 });
+});
+
+btnCim.addEventListener('click', () => {
+  useCimahi();
+});
+
+function useCimahi() {
+  currentCoords = { ...CIMAHI };
+  fetchAndRender(currentCoords);
+}
+
+function status(msg) {
+  statusEl.textContent = msg;
+}
+
+function setLastUpdate(ts) {
+  lastUpdateEl.textContent = 'Terakhir: ' + new Date(ts).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+}
+
+async function fetchAndRender(coords) {
+  clearInterval(refreshTimer);
+  weatherEl.style.display = 'none';
+  status('Mengambil data cuaca untuk: ' + coords.name + ' …');
+
+  try {
+    // Build Open-Meteo URL (current + hourly temp + precipitation + weathercode + wind)
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}` +
+                `&current_weather=true&hourly=temperature_2m,precipitation,windspeed_10m,weathercode&timezone=Asia%2FJakarta`;
+
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('Gagal fetch data cuaca');
+
+    const data = await r.json();
+
+    // Current weather
+    const cur = data.current_weather;
+    const timeNow = cur?.time || data.hourly?.time?.[0];
+    const temp = cur?.temperature ?? '—';
+    const wind = cur?.windspeed ?? '—';
+    const weatherCode = cur?.weathercode ?? null;
+    const pressure = data.hourly?.surface_pressure ? (data.hourly.surface_pressure[0] || '—') : '—';
+    // precipitation: Open-Meteo hourly precipitation available; take current hour index
+    let precip = '—';
+    if (data.hourly && data.hourly.time) {
+      const idx = data.hourly.time.indexOf(timeNow);
+      if (idx >= 0 && data.hourly.precipitation) precip = data.hourly.precipitation[idx];
     }
 
-    // Hitungan sederhana: untuk setiap jari (index/middle/ring/pinky) bandingkan tip.y < pip.y
-    // Untuk ibu jari, bandingkan tip.x terhadap mcp.x berdasarkan tangan kiri/kanan
-    function countFingers(landmarks, handednessLabel) {
-      if (!landmarks) return 0;
-      // Indeks landmark yang penting
-      const TIP = { thumb:4, index:8, middle:12, ring:16, pinky:20 };
-      const PIP = { thumb:2, index:6, middle:10, ring:14, pinky:18 };
+    // Render
+    placeEl.textContent = coords.name + ` (lat:${coords.lat.toFixed(4)}, lon:${coords.lon.toFixed(4)})`;
+    localTimeEl.textContent = 'Waktu (WIB): ' + new Date(timeNow).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+    tempEl.textContent = temp + '°C';
+    condEl.textContent = weatherCodeToText(weatherCode);
+    windsEl.textContent = wind + ' m/s';
+    precipEl.textContent = precip + ' mm';
+    pressureEl.textContent = pressure !== '—' ? pressure + ' hPa' : '—';
 
-      let count = 0;
+    // Hourly preview (next 12 jam)
+    hourlyEl.innerHTML = '';
+    if (data.hourly && data.hourly.time) {
+      const times = data.hourly.time;
+      const temps = data.hourly.temperature_2m || [];
+      const precs = data.hourly.precipitation || [];
+      const codes = data.hourly.weathercode || [];
 
-      // untuk 4 jari (index..pinky): tip.y < pip.y berarti terangkat (y ke bawah bertambah)
-      ['index','middle','ring','pinky'].forEach(name => {
-        const tip = landmarks[TIP[name]];
-        const pip = landmarks[PIP[name]];
-        if (tip && pip && tip.y < pip.y - 0.02) count++;
-      });
-
-      // ibu jari: periksa sumbu-x relatif terhadap mcp (landmark 2 atau 1)
-      const thumbTip = landmarks[TIP.thumb];
-      const thumbIp = landmarks[PIP.thumb];
-      const thumbMcp = landmarks[1];
-      if (thumbTip && thumbMcp) {
-        // handednessLabel biasanya 'Right' atau 'Left'
-        if (handednessLabel && handednessLabel.toLowerCase().includes('right')) {
-          // jika tangan kanan, ibu jari di sisi kiri dari mcp (nilai x lebih kecil)
-          if (thumbTip.x < thumbMcp.x - 0.03) count++;
-        } else if (handednessLabel && handednessLabel.toLowerCase().includes('left')) {
-          // untuk tangan kiri, ibu jari lebih besar dari mcp
-          if (thumbTip.x > thumbMcp.x + 0.03) count++;
-        } else {
-          // fallback: cek jarak absolut antara tip dan mcp di sumbu x
-          if (Math.abs(thumbTip.x - thumbMcp.x) > 0.05) count++;
-        }
-      }
-
-      return count;
-    }
-
-    const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646427220/${file}`
-    });
-
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.6
-    });
-
-    hands.onResults((results) => {
-      if (!videoElement.videoWidth) return;
-      fitCanvas();
-      canvasCtx.save();
-      canvasCtx.clearRect(0,0,canvasElement.width,canvasElement.height);
-      // mirror the canvas to match video (optional but makes it intuitive)
-      canvasCtx.translate(canvasElement.width, 0);
-      canvasCtx.scale(-1, 1);
-
-      // draw video frame to canvas (semi-transparent)
-      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        const landmarks = results.multiHandLandmarks[0];
-        const handedness = (results.multiHandedness && results.multiHandedness[0] && results.multiHandedness[0].label) || '';
-
-        // draw annotations
-        drawConnectors(canvasCtx, landmarks, Hands.HAND_CONNECTIONS, {lineWidth:2});
-        drawLandmarks(canvasCtx, landmarks, {lineWidth:1});
-
-        const fingers = countFingers(landmarks, handedness);
-
-        let text = '';
-        if (fingers === 1) text = 'aku';
-        else if (fingers === 2) text = 'nama saya adril';
-        else if (fingers === 3) text = 'salam kenal';
-        else if (fingers === 0) text = '0 — tunjukkan 1/2/3 jari';
-        else text = `${fingers} jari`;
-
-        messageEl.textContent = text;
-        statusEl.textContent = `Terdeteksi tangan (${handedness}), jari: ${fingers}`;
-
-        // tampilkan teks besar di atas video
-        canvasCtx.font = '28px system-ui, Arial';
-        canvasCtx.fillStyle = 'rgba(0,0,0,0.6)';
-        canvasCtx.fillRect(10,10,260,44);
-        canvasCtx.fillStyle = '#fff';
-        canvasCtx.fillText(text, 18, 40);
-
-      } else {
-        messageEl.textContent = 'Tidak ada tangan terdeteksi — arahkan tangan ke kamera.';
-        statusEl.textContent = 'Menunggu tangan...';
-      }
-
-      canvasCtx.restore();
-    });
-
-    // set up camera
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await hands.send({image: videoElement});
-      },
-      width: 1280,
-      height: 720
-    });
-
-    async function startCamera() {
-      try {
-        await camera.start();
-        statusEl.textContent = 'Kamera aktif — arahkan tangan ke kamera.';
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = 'Gagal mengakses kamera: ' + err.message;
+      // find index of current time
+      const startIdx = Math.max(0, times.indexOf(timeNow));
+      for (let i = startIdx; i < Math.min(times.length, startIdx + 12); i++) {
+        const t = new Date(times[i] + 'Z').toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
+        const ti = document.createElement('div');
+        ti.className = 'hourly-item';
+        ti.innerHTML = `<div class="small">${t}</div>
+                        <div style="font-weight:700">${temps[i] ?? '—'}°C</div>
+                        <div class="small">${weatherCodeToShort(codes[i])}</div>
+                        <div class="small">💧${precs[i] ?? '0'} mm</div>`;
+        hourlyEl.appendChild(ti);
       }
     }
 
-    // When video stream becomes ready, resize canvas
-    videoElement.addEventListener('loadeddata', () => fitCanvas());
+    status('');
+    weatherEl.style.display = 'block';
+    setLastUpdate(Date.now());
+    // example display: include current condition (for Cimahi example)
+    exampleNow.textContent = temp + '°C, ' + weatherCodeToText(weatherCode) + ' (sumber: Open-Meteo).';
 
-    startCamera();
-  </script>
+    // auto-refresh
+    refreshTimer = setInterval(() => fetchAndRender(coords), REFRESH_MS);
+
+  } catch (err) {
+    console.error(err);
+    status('Terjadi kesalahan saat mengambil data cuaca: ' + err.message);
+  }
+}
+
+// Helper: map Open-Meteo weathercode to text
+function weatherCodeToText(code){
+  if (code == null) return 'Tidak tersedia';
+  // simplified mapping (lihat open-meteo weathercode)
+  const map = {
+    0: 'Cerah',
+    1: 'Cerah berawan',
+    2: 'Berawan',
+    3: 'Cerah/berawan tebal',
+    45: 'Kabut',
+    48: 'Kabut (deposit)',
+    51: 'Hujan gerimis ringan',
+    53: 'Hujan gerimis sedang',
+    55: 'Hujan gerimis deras',
+    61: 'Hujan ringan',
+    63: 'Hujan sedang',
+    65: 'Hujan lebat',
+    71: 'Salju ringan',
+    73: 'Salju sedang',
+    75: 'Salju lebat',
+    80: 'Hujan lokal ringan',
+    81: 'Hujan lokal sedang',
+    82: 'Hujan lokal lebat',
+    95: 'Badai sedang',
+    96: 'Badai petir (ringan)',
+    99: 'Badai petir (berat)'
+  };
+  return map[code] ?? 'Kode cuaca ' + code;
+}
+function weatherCodeToShort(code){
+  if (code == null) return '—';
+  const shortMap = {
+    0:'☀️',1:'⛅',2:'☁️',3:'☁️',45:'🌫️',48:'🌫️',
+    51:'🌦️',53:'🌦️',55:'🌧️',61:'🌧️',63:'🌧️',65:'⛈️',
+    71:'❄️',73:'❄️',75:'❄️',80:'🌧️',81:'🌧️',82:'⛈️',95:'⛈️',96:'⛈️',99:'⛈️'
+  };
+  return shortMap[code] ?? '🌤';
+}
+
+// Initial example fetch for Cimahi to show sample (and to provide an immediate example)
+(async ()=> {
+  try {
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${CIMAHI.lat}&longitude=${CIMAHI.lon}&current_weather=true&timezone=Asia%2FJakarta`);
+    if (r.ok) {
+      const d = await r.json();
+      const cur = d.current_weather;
+      if (cur) exampleNow.textContent = `${cur.temperature}°C, ${weatherCodeToText(cur.weathercode)}`;
+      // else leave as dash
+    }
+  } catch(e){ console.warn('example fetch failed', e) }
+})();
+
+</script>
 </body>
 </html>
