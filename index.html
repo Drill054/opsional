@@ -189,7 +189,7 @@ async function fetchAndRender(coords) {
     weatherEl.style.display = 'block';
     setLastUpdate(Date.now());
     // example display: include current condition (for Cimahi example)
-    exampleNow.textContent = temp + '°C, ' + weatherCodeToText(weatherCode) + ' (sumber: Open-Meteo).';
+    exampleNow.textContent = temp + '°C, ' + weatherCodeToText(weatherCode) + ' (sumber: DrillXz).';
 
     // auto-refresh
     refreshTimer = setInterval(() => fetchAndRender(coords), REFRESH_MS);
